@@ -135,7 +135,7 @@ class ServiceHandler(tornado.websocket.WebSocketHandler):
       return
 
     setattr(self, "user", user)
-    print "WebSocket Opened for " + user["username"]
+    logging.debug("WebSocket Opened for " + user["username"])
 
   @tornado.gen.coroutine
   def on_message(self, message):
@@ -148,47 +148,46 @@ class ServiceHandler(tornado.websocket.WebSocketHandler):
 
     try:
       request = rpc.parse_request(message)
-      print str(request)
     except BadRequestError as e:
       # request was invalid, directly create response
-      print "User: " + user[u'username']
-      print "   Exception: " + str(e)
+      logging.error("User: " + user[u'username'])
+      logging.error( "   Exception: " + str(e))
       response = e.error_respond(e)
       self.write_message(response.serialize())
 
     services = self.settings['services']
     svc_name, sep, func_name = request.method.partition(u'.')
-    print svc_name + ":" + func_name
+    logging.debug(svc_name + ":" + func_name)
 
     error_result = None
     if not svc_name in services:
-      print "Bad Service Name: " + svc_name
+      logging.debug("Bad Service Name: " + svc_name)
       error_result = u"Error: " + svc_name + u" not a valid service"
     else:
       func = getattr(services[svc_name], func_name, None)
       if not callable(func):
-        print "Bad Function Name: " + func_name + " in Service: " + svc_name
+        logging.debug("Bad Function Name: " + func_name + " in Service: " + svc_name)
         error_result = u"Error: " + func_name + u" not a valid function in service " + svc_name
       else:
         try:
           utask = UserTask()
           result = yield tornado.gen.Task(utask.start_task_as_user, func, *request.args, user=user, **request.kwargs)
         except Exception as e:
-          print "exception: " + str(e)
+          logging.error("exception: " + str(e))
           error_result = request.error_respond(e)
     if error_result:
-      print "error: " + error_result
+      logging.error(error_result)
       self.write_message(request.error_respond(error_result).serialize())
     else:
-      print "result: " + result
+      logging.debug(result)
       self.write_message(request.respond(result).serialize())
 
   def on_close(self):
     user = getattr(self, "user", None)
     if user:
-      print "WebSocket Closed for " + user["username"]
+      logging.debug("WebSocket Closed for " + user["username"])
     else:
-      print "WebSocket Closed with user auth error"
+      logging.error("WebSocket Closed with user auth error")
 
   def sleep(self, seconds):
       time.sleep(seconds)
@@ -198,18 +197,25 @@ class ServiceHandler(tornado.websocket.WebSocketHandler):
 def fms_cleanup_orphans():
   db = db_async
   threshold = datetime.datetime.now() - datetime.timedelta(seconds=30)
-  print "Running token orphan cleanup for threshold: " + str(threshold)
+  logging.info("Running token orphan cleanup for threshold: " + str(threshold))
   result = yield motor.Op(db.tokens.remove, {u'created': {'$lt': threshold}})
   n = result[u'n']
-  print str(n) + " orphaned tokens cleaned"
+  logging.info(str(n) + " orphaned tokens cleaned")
 
+######
+# __main__
+##
 if __name__ == "__main__":
+  # setup logging module
+  logging.basicConfig(format='%(asctime)s:%(levelname)s: %(message)s', filename='/var/log/forge.d.log', level=logging.DEBUG)
+
   # check that tmp directory for socket notifications exists and is read/write
   if os.path.isdir('/tmp/forge.d'):
     if not os.access('/tmp/forge.d', os.W_OK | os.R_OK):
-      print "Permission error: Unable to access /tmp/forge.d"
-      #raise
+      #print "Permission error: Unable to access /tmp/forge.d"
+      raise Exception("Permission error: Unable to access /tmp/forge.d/")
   else:
+    logging.info("Creating temporary directory")
     os.mkdir('/tmp/forge.d')
 
   # open an async MongoDB client for registering the security tokens
@@ -217,7 +223,8 @@ if __name__ == "__main__":
 
   # load service modules and initialize
   if not os.path.isdir('./services'):
-    print "no services directory"
+    #print "no services directory"
+    logging.info("No services directory found. No services loaded.")
   else:
     services = {}
     for file in os.listdir('./services'):
