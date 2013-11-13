@@ -13,6 +13,7 @@ import time
 import motor
 import os
 import imp
+from tornado.options import define, options
 from tinyrpc.protocols.jsonrpc import JSONRPCProtocol
 from tinyrpc.protocols.jsonrpc import JSONRPCSuccessResponse
 from tinyrpc import BadRequestError, RPCBatchRequest
@@ -135,7 +136,7 @@ class ServiceHandler(tornado.websocket.WebSocketHandler):
       return
 
     setattr(self, "user", user)
-    logging.debug("WebSocket Opened for " + user["username"])
+    logging.debug("WebSocket Opened for " + user["username"] + "[" + str(options.port) + "]")
 
   @tornado.gen.coroutine
   def on_message(self, message):
@@ -179,7 +180,7 @@ class ServiceHandler(tornado.websocket.WebSocketHandler):
       logging.error(error_result)
       self.write_message(request.error_respond(error_result).serialize())
     else:
-      logging.debug(result)
+      logging.debug("result obtained")
       self.write_message(request.respond(result).serialize())
 
   def on_close(self):
@@ -206,8 +207,11 @@ def fms_cleanup_orphans():
 # __main__
 ##
 if __name__ == "__main__":
-  # setup logging module
-  logging.basicConfig(format='%(asctime)s:%(levelname)s: %(message)s', filename='/var/log/forge.d.log', level=logging.DEBUG)
+  # define command-line and configuration options
+  define("config", type=str, help="path to config file",
+       callback=lambda path: tornado.options.parse_config_file(path, final=False))
+  define("port", default=8900, help="port number to listen on")
+  define("cleanup_interval", default=5, help="time interval to run orphaned token cleanup in minutes. 0 to supress cleanup (useful for multiple instances)")
 
   # check that tmp directory for socket notifications exists and is read/write
   if os.path.isdir('/tmp/forge.d'):
@@ -215,7 +219,7 @@ if __name__ == "__main__":
       #print "Permission error: Unable to access /tmp/forge.d"
       raise Exception("Permission error: Unable to access /tmp/forge.d/")
   else:
-    logging.info("Creating temporary directory")
+    print("Creating temporary directory.\n")
     os.mkdir('/tmp/forge.d')
 
   # open an async MongoDB client for registering the security tokens
@@ -224,7 +228,7 @@ if __name__ == "__main__":
   # load service modules and initialize
   if not os.path.isdir('./services'):
     #print "no services directory"
-    logging.info("No services directory found. No services loaded.")
+    print("No services directory found. No services loaded.\n")
   else:
     services = {}
     for file in os.listdir('./services'):
@@ -235,18 +239,25 @@ if __name__ == "__main__":
         if callable(func_init):
           func_init()
 
+  # this has to called after service modules are loaded, in case they define options
+  tornado.options.parse_command_line()
+
   application = tornado.web.Application([
       (r"/login", LoginHandler),
       (r"/logout", LogoutHandler),
       (r"/service", ServiceHandler),
     ],
       cookie_secret = "H1!VNFpDCcIQZ$OikUlUj!LWQj2$9VOLmYUWnfBQ~8k96NUsTEyLCUpXtVMHIH5H",
-      db_async=db_async, services=services, rpc=JSONRPCProtocol(), debug=True)
+      db_async=db_async, services=services, rpc=JSONRPCProtocol(), debug=True, xheaders=True)
   
-  application.listen(8888)
+  application.listen(options.port)
   ioloop = tornado.ioloop.IOLoop.instance()
-  cleanup_timer = tornado.ioloop.PeriodicCallback(fms_cleanup_orphans, 5 * 60 * 1000, ioloop)
+
+  if options.cleanup_interval > 0:
+    cleanup_timer = tornado.ioloop.PeriodicCallback(fms_cleanup_orphans, options.cleanup_interval * 60 * 1000, ioloop)
+    cleanup_timer.start()
+  else:
+    logging.info("No orphaned token cleanup scheduled for this instance.")
   
-  print "Starting Forge FMS Daemon"
-  cleanup_timer.start()
+  print("Starting Forge FMS Daemon on port: " + str(options.port) + "\n")
   ioloop.start()
