@@ -42,7 +42,7 @@ class UserTask:
         os.setgid(user[u'gid'])
         os.setuid(user[u'uid'])
         os.chdir(user[u'home'])
-        pipe.send(taskname(user, *args, **kwargs))
+        pipe.send(taskname(*args, user=user, **kwargs))
 
         #notify
         sox = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

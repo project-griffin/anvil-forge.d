@@ -9,6 +9,7 @@ import time
 import motor
 import os
 #import imp
+from shutil import copy2
 from tornado.options import define, options
 from tinyrpc.protocols.jsonrpc import JSONRPCProtocol
 from tinyrpc.protocols.jsonrpc import JSONRPCSuccessResponse
@@ -19,6 +20,33 @@ class BaseRequestHandler(tornado.web.RequestHandler):
   def set_default_headers(self):
     self.set_header("Access-Control-Allow-Origin", "http://anvil-front.cloudapp.net")
     self.set_header("Access-Control-Allow-Credentials", "true")  
+
+class BinaryUploadHandler(tornado.web.RequestHandler):
+  @tornado.gen.coroutine
+  def post(self):
+    token = self.get_argument('file.user_upload_token', default=None)
+    db = self.settings['db_async']
+    user = yield motor.Op(db.upload_tokens.find_one, {u'_id': token})
+    yield motor.Op(db.tokens.remove, {u'_id': token})
+
+    if not user:
+      logging.debug("invalid user upload token presented")
+      self.write({u'error': u'upload failed'})
+      self.finish()
+
+    fname = self.get_argument('file.name', default=None)
+    fpath = self.get_argument('file.path', default=None)
+    ftarg = self.get_argument('file.target_dir', default=None)
+
+    utask = UserTask(user, self.copy)
+    result = yield tornado.gen.Task(utask.start_task_as_user, fpath, ftarg)
+
+    os.unlink(fpath)
+    self.write({u'result': result})
+    self.finish()
+
+  def copy(src, dest, **kwargs):
+    return copy2(src, dest)
 
 class LoginHandler(BaseRequestHandler):
   @tornado.gen.coroutine
@@ -114,7 +142,7 @@ class ServiceHandler(tornado.websocket.WebSocketHandler):
       else:
         try:
           utask = UserTask(user, func)
-          result = yield tornado.gen.Task(utask.start_task_as_user, *request.args, **request.kwargs)
+          result = yield tornado.gen.Task(utask.start_task_as_user, *request.args, settings=self.settings, **request.kwargs)
         except Exception as e:
           logging.error("exception: " + str(e))
           error_result = request.error_respond(e)
@@ -122,6 +150,8 @@ class ServiceHandler(tornado.websocket.WebSocketHandler):
       logging.error(error_result)
       self.write_message(request.error_respond(error_result).serialize())
     else:
+      if result == "":
+        result = u"OK";
       logging.debug("result obtained")
       self.write_message(request.respond(result).serialize())
 
